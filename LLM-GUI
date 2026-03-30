@@ -1,0 +1,877 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+from tkinterdnd2 import TkinterDnD, DND_FILES
+from PIL import Image, ImageTk
+import os
+import json
+import threading
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+ventana = TkinterDnD.Tk()
+ventana.title("red neuronal")
+ventana.geometry("1200x700")
+ventana.configure(bg="#09090b")
+
+neurona_seleccionada = [None]
+indice_neurona = [0]
+imagenes = []
+capas_elegidas = []
+modelo_actual = [None]
+grafica_canvas = [None]
+
+# ══════════════════════════════════════════
+# REGLAS
+# ══════════════════════════════════════════
+
+SALIDA_TIPO = {
+    "Conv2D":                   "3D",
+    "Conv2DTranspose":          "3D",
+    "SeparableConv2D":          "3D",
+    "DepthwiseConv2D":          "3D",
+    "ZeroPadding2D":            "3D",
+    "MaxPooling2D":             "3D",
+    "GlobalAveragePooling2D":   "1D",
+    "Conv1D":                   "2D_seq",
+    "MaxPooling1D":             "2D_seq",
+    "GlobalAveragePooling1D":   "1D",
+    "SeparableConv1D":          "2D_seq",
+    "LSTM":                     "1D",
+    "GRU":                      "1D",
+    "SimpleRNN":                "1D",
+    "Bidirectional":            "1D",
+    "Embedding":                "2D_seq",
+    "MultiHeadAttention":       "hereda",
+    "Flatten":                  "1D",
+    "Dense":                    "1D",
+    "Reshape":                  "hereda",
+    "Permute":                  "hereda",
+    "Dropout":                  "hereda",
+    "BatchNormalization":       "hereda",
+    "LayerNormalization":       "hereda",
+    "Attention":                "3D",
+}
+
+ENTRADA_TIPO = {
+    "Conv2D":                   "3D",
+    "Conv2DTranspose":          "3D",
+    "SeparableConv2D":          "3D",
+    "DepthwiseConv2D":          "3D",
+    "ZeroPadding2D":            "3D",
+    "MaxPooling2D":             "3D",
+    "GlobalAveragePooling2D":   "3D",
+    "Conv1D":                   "2D_seq",
+    "MaxPooling1D":             "2D_seq",
+    "GlobalAveragePooling1D":   "2D_seq",
+    "SeparableConv1D":          "2D_seq",
+    "LSTM":                     "2D_seq",
+    "GRU":                      "2D_seq",
+    "SimpleRNN":                "2D_seq",
+    "Bidirectional":            "2D_seq",
+    "Embedding":                "indices",
+    "MultiHeadAttention":       "cualquiera",
+    "Flatten":                  "cualquiera",
+    "Dense":                    "1D",
+    "Reshape":                  "cualquiera",
+    "Permute":                  "cualquiera",
+    "Dropout":                  "cualquiera",
+    "BatchNormalization":       "cualquiera",
+    "LayerNormalization":       "cualquiera",
+    "Attention":                "3D",
+}
+
+# capas que NO son válidas como última capa
+NO_VALIDAS_COMO_FINAL = [
+    "Conv2D", "Conv2DTranspose", "SeparableConv2D", "DepthwiseConv2D",
+    "ZeroPadding2D", "MaxPooling2D", "GlobalAveragePooling2D",
+    "Conv1D", "MaxPooling1D", "GlobalAveragePooling1D", "SeparableConv1D",
+    "LSTM", "GRU", "SimpleRNN", "Bidirectional",
+    "Embedding", "Flatten", "Attention", "MultiHeadAttention",
+    "Dropout", "BatchNormalization", "LayerNormalization",
+    "Reshape", "Permute",
+]
+
+NEURONAS = [
+    # ── 1D / clásicas ──
+    {"nombre": "Dense",                 "color": "#1D9E75",
+     "desc": "Neurona básica conectada a todo.\nSirve para clasificación general.\nSe usa más en capas finales."},
+    {"nombre": "Dropout",               "color": "#444",
+     "desc": "Apaga neuronas al azar durante entrenamiento.\nReduce overfitting.\nSe pone después de capas densas o recurrentes."},
+    {"nombre": "BatchNormalization",    "color": "#444",
+     "desc": "Normaliza las activaciones por lote.\nEstabiliza y acelera el entrenamiento.\nSe pone antes o después de Dense/Conv."},
+    {"nombre": "LayerNormalization",    "color": "#555",
+     "desc": "Normaliza por capa en vez de por lote.\nMejor para secuencias y transformers.\nSe usa con LSTM, GRU o Attention."},
+    # ── convolucionales 2D ──
+    {"nombre": "Conv2D",                "color": "#534AB7",
+     "desc": "Detecta patrones en imágenes.\nSirve para bordes y formas.\nSe usa más en visión por computadora."},
+    {"nombre": "SeparableConv2D",       "color": "#6B62C8",
+     "desc": "Conv2D más eficiente.\nMenos parámetros, misma capacidad.\nBuena para modelos pequeños o móviles."},
+    {"nombre": "DepthwiseConv2D",       "color": "#7F77DD",
+     "desc": "Convolución por canal separado.\nMuy liviana en parámetros.\nSe usa en MobileNet y similares."},
+    {"nombre": "Conv2DTranspose",       "color": "#185FA5",
+     "desc": "Conv2D al revés, upsampling.\nSirve para reconstruir imágenes.\nSe usa en autoencoders y generativos."},
+    {"nombre": "MaxPooling2D",          "color": "#3A7FBF",
+     "desc": "Reduce resolución tomando el máximo.\nComprime representación espacial.\nSe pone después de Conv2D."},
+    {"nombre": "GlobalAveragePooling2D","color": "#2E6DA0",
+     "desc": "Promedia todo el mapa de features.\nColapsa 3D a 1D sin Flatten.\nSe usa al final de redes convolucionales."},
+    {"nombre": "ZeroPadding2D",         "color": "#4A90C4",
+     "desc": "Agrega bordes de ceros a la imagen.\nEvita que se reduzca el tamaño.\nSe pone antes de Conv2D."},
+    # ── convolucionales 1D ──
+    {"nombre": "Conv1D",                "color": "#7F77DD",
+     "desc": "Detecta patrones en secuencias.\nSirve para texto y audio.\nSe usa más en señales 1D."},
+    {"nombre": "MaxPooling1D",          "color": "#9A91E8",
+     "desc": "Reduce longitud de secuencia.\nComprime representación temporal.\nSe pone después de Conv1D."},
+    {"nombre": "GlobalAveragePooling1D","color": "#8880E0",
+     "desc": "Promedia toda la secuencia.\nColapsa 2D_seq a 1D.\nSe usa al final de ramas convolucionales 1D."},
+    # ── recurrentes ──
+    {"nombre": "LSTM",                  "color": "#D85A30",
+     "desc": "Tiene memoria larga.\nSirve para texto y series de tiempo.\nSe usa más en lenguaje natural."},
+    {"nombre": "GRU",                   "color": "#EF9F27",
+     "desc": "Como LSTM pero más rápida.\nSirve para secuencias cortas.\nSe usa cuando hay poco CPU."},
+    {"nombre": "SimpleRNN",             "color": "#C47A1E",
+     "desc": "Red recurrente básica.\nMás simple que LSTM y GRU.\nSe usa para secuencias cortas simples."},
+    {"nombre": "Bidirectional",         "color": "#639922",
+     "desc": "Lee la secuencia en dos direcciones.\nSirve para contexto completo.\nSe usa con LSTM o GRU."},
+    # ── atención / transformer ──
+    {"nombre": "MultiHeadAttention",    "color": "#993C1D",
+     "desc": "Atención con múltiples cabezas.\nBase de los transformers modernos.\nFunciona en Sequential directamente."},
+    {"nombre": "Embedding",             "color": "#D4537E",
+     "desc": "Convierte palabras en vectores.\nSirve para procesar texto.\nSolo puede ser la primera capa."},
+    # ── utilidad ──
+    {"nombre": "Flatten",               "color": "#888780",
+     "desc": "Aplasta datos multidimensionales a 1D.\nSirve de puente entre Conv y Dense.\nNecesario antes de capas Dense."},
+    {"nombre": "Reshape",               "color": "#666",
+     "desc": "Cambia la forma del tensor.\nSirve para ajustar dimensiones.\nRequiere conocer las dimensiones exactas."},
+]
+
+OPCIONALES = {
+    "Dense":                 ["Dropout", "BatchNormalization"],
+    "Conv2D":                ["MaxPooling2D", "Dropout"],
+    "SeparableConv2D":       ["MaxPooling2D", "Dropout"],
+    "DepthwiseConv2D":       ["MaxPooling2D", "Dropout"],
+    "Conv2DTranspose":       ["Dropout"],
+    "ZeroPadding2D":         [],
+    "MaxPooling2D":          [],
+    "GlobalAveragePooling2D":["Dropout"],
+    "Conv1D":                ["MaxPooling1D", "Dropout"],
+    "MaxPooling1D":          [],
+    "GlobalAveragePooling1D":["Dropout"],
+    "LSTM":                  ["Dropout", "LayerNormalization"],
+    "GRU":                   ["Dropout", "LayerNormalization"],
+    "SimpleRNN":             ["Dropout"],
+    "Embedding":             [],
+    "Bidirectional":         ["Dropout"],
+    "MultiHeadAttention":    ["Dropout", "LayerNormalization"],
+    "Flatten":               [],
+    "Reshape":               [],
+    "Dropout":               [],
+    "BatchNormalization":    [],
+    "LayerNormalization":    [],
+    "Attention":             [],
+}
+
+def get_nombre_capa(capa_str):
+    orden = [
+        "GlobalAveragePooling2D", "GlobalAveragePooling1D",
+        "Conv2DTranspose", "SeparableConv2D", "DepthwiseConv2D",
+        "ZeroPadding2D", "MaxPooling2D", "MaxPooling1D",
+        "SeparableConv1D", "BatchNormalization", "LayerNormalization",
+        "MultiHeadAttention", "Bidirectional", "Embedding",
+        "Attention", "SimpleRNN", "Flatten",
+        "Conv2D", "Conv1D", "Dense", "Dropout",
+        "Reshape", "Permute", "LSTM", "GRU",
+    ]
+    for nombre in orden:
+        if nombre in capa_str:
+            return nombre
+    return None
+
+# ══════════════════════════════════════════
+# PANELES
+# ══════════════════════════════════════════
+canvas_izq = tk.Canvas(ventana, bg="blue", highlightthickness=0)
+canvas_izq.place(x=0, y=0, width=350, height=300)
+
+canvas_der = tk.Canvas(ventana, bg="yellow", highlightthickness=0)
+canvas_der.place(x=350, y=0, width=350, height=300)
+
+panel_fotos = tk.Frame(ventana, bg="red")
+panel_fotos.place(x=0, y=300, width=700, height=200)
+
+panel_codigo = tk.Frame(ventana, bg="#09090b")
+panel_codigo.place(x=750, y=0, width=450, height=350)
+
+texto_codigo = tk.Text(panel_codigo, bg="#09090b", fg="#a1a1aa",
+                       font=("Courier", 10), borderwidth=0)
+texto_codigo.place(x=0, y=0, width=450, height=350)
+texto_codigo.insert("end", "# el código aparece aquí")
+
+panel_extra = tk.Frame(ventana, bg="#1a1a2e")
+panel_extra.place(x=750, y=350, width=450, height=350)
+
+# ══════════════════════════════════════════
+# UTILIDADES
+# ══════════════════════════════════════════
+def get_nombre_capa(capa_str):
+    # orden importante: primero los nombres más largos para evitar falsos matches
+    orden = ["Conv2DTranspose", "MaxPooling2D", "BatchNormalization",
+             "Bidirectional", "Embedding", "Attention", "Flatten",
+             "Conv2D", "Conv1D", "Dense", "Dropout", "LSTM", "GRU"]
+    for nombre in orden:
+        if nombre in capa_str:
+            return nombre
+    return None
+
+def get_tipo_salida(capa_str, tipo_anterior="1D"):
+    nombre = get_nombre_capa(capa_str)
+    if not nombre:
+        return tipo_anterior
+    t = SALIDA_TIPO.get(nombre, "1D")
+    if t == "hereda":
+        return tipo_anterior
+    return t
+
+def actualizar_codigo():
+    texto_codigo.delete("1.0", "end")
+    if not capas_elegidas:
+        texto_codigo.insert("end", "# el código aparece aquí")
+        return
+    lineas = ["import tensorflow as tf", "",
+              "modelo = tf.keras.Sequential(["]
+    for capa in capas_elegidas:
+        lineas.append(f"    {capa},")
+    lineas.append("])")
+    lineas.append("")
+    lineas.append("modelo.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])")
+    texto_codigo.insert("end", "\n".join(lineas))
+
+def limpiar(canvas):
+    for w in canvas.winfo_children():
+        w.destroy()
+    canvas.delete("all")
+
+# ══════════════════════════════════════════
+# SUGERENCIAS POR TRANSICIÓN DE TIPOS
+# ══════════════════════════════════════════
+# Para cada par (tipo_actual, tipo_requerido) → lista de capas que resuelven el problema
+# Puentes por transición de tipos (basado en las tablas)
+SOLUCIONES = {
+    ("3D", "1D"): [
+        ("Flatten  (aplasta 3D→1D)",               "tf.keras.layers.Flatten()"),
+        ("GlobalAveragePooling2D  (3D→1D)",         "tf.keras.layers.GlobalAveragePooling2D()"),
+        ("LSTM(64)  (3D→1D)",                      "tf.keras.layers.LSTM(64)"),
+        ("GRU(64)  (3D→1D)",                       "tf.keras.layers.GRU(64)"),
+        ("SimpleRNN(64)  (3D→1D)",                 "tf.keras.layers.SimpleRNN(64)"),
+        ("Bidirectional(LSTM)  (3D→1D)",           "tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64))"),
+    ],
+    ("3D", "2D_seq"): [
+        ("LSTM(64, return_seq)  (3D→2D_seq)",      "tf.keras.layers.LSTM(64, return_sequences=True)"),
+        ("GRU(64, return_seq)  (3D→2D_seq)",       "tf.keras.layers.GRU(64, return_sequences=True)"),
+        ("SimpleRNN(64, return_seq)  (3D→2D_seq)", "tf.keras.layers.SimpleRNN(64, return_sequences=True)"),
+    ],
+    ("2D_seq", "1D"): [
+        ("Flatten  (aplasta 2D_seq→1D)",            "tf.keras.layers.Flatten()"),
+        ("GlobalAveragePooling1D  (2D_seq→1D)",     "tf.keras.layers.GlobalAveragePooling1D()"),
+        ("LSTM(64)  (2D_seq→1D)",                   "tf.keras.layers.LSTM(64)"),
+        ("GRU(64)  (2D_seq→1D)",                    "tf.keras.layers.GRU(64)"),
+        ("SimpleRNN(64)  (2D_seq→1D)",              "tf.keras.layers.SimpleRNN(64)"),
+        ("Bidirectional(LSTM)  (2D_seq→1D)",        "tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64))"),
+    ],
+    # imposibles
+    ("1D", "3D"):     [],
+    ("1D", "2D_seq"): [],
+    ("2D_seq", "3D"): [],
+}
+
+# ══════════════════════════════════════════
+# VALIDADOR PRE-ENTRENAMIENTO
+# ══════════════════════════════════════════
+def validar_y_entrenar(epocas_callback):
+    if not capas_elegidas:
+        messagebox.showerror("error", "no hay capas para entrenar")
+        return
+    _validar_desde(0, None, epocas_callback)
+
+def _validar_desde(i, tipo_actual, epocas_callback):
+    if i >= len(capas_elegidas):
+        _verificar_final(epocas_callback)
+        return
+
+    capa_str = capas_elegidas[i]
+    nombre = get_nombre_capa(capa_str)
+
+    # ── caso 0: capa redundante duplicada (ej: Dropout→Dropout) ──
+    if nombre in ("Dropout", "BatchNormalization") and i > 0:
+        anterior_nombre = get_nombre_capa(capas_elegidas[i-1])
+        if anterior_nombre == nombre:
+            def _elim_dup(_, cb=epocas_callback, idx=i, ta=tipo_actual):
+                del capas_elegidas[idx]
+                actualizar_codigo()
+                _validar_desde(idx, ta, cb)
+            def _dejar_dup(cb=epocas_callback, idx=i, ta=tipo_actual):
+                _validar_desde(idx + 1, tipo_actual, cb)
+            _mostrar_opciones(
+                f"Hay dos '{nombre}' seguidos.\n"
+                f"Eso es redundante y no aporta nada al modelo.",
+                [("Eliminar el segundo '" + nombre + "'", "__eliminar__")],
+                _elim_dup, _dejar_dup, epocas_callback
+            )
+            return
+
+    # ── caso 1: Embedding en el medio (solo puede ser primera capa) ──
+    if nombre == "Embedding" and i > 0:
+        def _elim_emb(_, cb=epocas_callback, idx=i, ta=tipo_actual):
+            del capas_elegidas[idx]
+            actualizar_codigo()
+            _validar_desde(idx, ta, cb)
+        def _dejar_emb(cb=epocas_callback, idx=i, ta=tipo_actual):
+            messagebox.showwarning("advertencia", "TensorFlow tirará error con Embedding en el medio.")
+            _validar_desde(idx + 1, "2D_seq", cb)
+        _mostrar_opciones(
+            "Embedding solo puede ser la PRIMERA capa.\n"
+            "En el medio no tiene sentido y TensorFlow tirará error.",
+            [("Eliminar Embedding de esta posición", "__eliminar__")],
+            _elim_emb, _dejar_emb, epocas_callback
+        )
+        return
+
+    # ── caso 2: Attention en Sequential (siempre falla) ──
+    if nombre == "Attention":
+        def _elim_att(_, cb=epocas_callback, idx=i, ta=tipo_actual):
+            del capas_elegidas[idx]
+            actualizar_codigo()
+            _validar_desde(idx, ta, cb)
+        def _dejar_att(cb=epocas_callback, idx=i, ta=tipo_actual):
+            nuevo_tipo = get_tipo_salida(capa_str, tipo_actual or "1D")
+            _validar_desde(idx + 1, nuevo_tipo, cb)
+        _mostrar_opciones(
+            "Attention en Sequential no funciona correctamente.\n"
+            "Necesita query y value por separado (API funcional).\n"
+            "En Sequential siempre tirará error.",
+            [("Eliminar Attention de la estructura", "__eliminar__")],
+            _elim_att, _dejar_att, epocas_callback
+        )
+        return
+
+    # ── caso 3: primera capa necesita Flatten si es Dense/Dropout/BatchNorm ──
+    if i == 0 and nombre in ("Dense", "Dropout", "BatchNormalization"):
+        def _si_flat(codigo, cb=epocas_callback):
+            insertar_capa(codigo, 0)
+            _validar_desde(1, "1D", cb)
+        def _no_flat(cb=epocas_callback):
+            _validar_desde(1, get_tipo_salida(capa_str, "1D"), cb)
+        _mostrar_opciones(
+            f"'{nombre}' como primera capa necesita Flatten antes\n"
+            f"para conocer la forma de la imagen de entrada (28×28×1).",
+            [("Flatten(input_shape=(28,28,1))  — aplana imagen 28×28",
+              "tf.keras.layers.Flatten(input_shape=(28,28,1))")],
+            _si_flat, _no_flat, epocas_callback
+        )
+        return
+
+    # ── caso 4: incompatibilidad de tipos entre capas consecutivas ──
+    if nombre and tipo_actual is not None:
+        tipo_requerido = ENTRADA_TIPO.get(nombre, "cualquiera")
+        if tipo_requerido != "cualquiera" and tipo_actual != tipo_requerido:
+            soluciones = SOLUCIONES.get((tipo_actual, tipo_requerido), [])
+            anterior = get_nombre_capa(capas_elegidas[i-1]) if i > 0 else "?"
+
+            # armar lista de opciones: puentes + eliminar
+            opciones_completas = list(soluciones)  # copiar para no modificar el original
+
+            # siempre agregar opción de eliminar la capa incompatible al final
+            opciones_completas.append(
+                ("Eliminar '" + nombre + "' de la estructura", "__eliminar__")
+            )
+
+            def _accion(codigo, cb=epocas_callback, idx=i, ta=tipo_actual):
+                if codigo == "__eliminar__":
+                    del capas_elegidas[idx]
+                    actualizar_codigo()
+                    _validar_desde(idx, ta, cb)
+                else:
+                    insertar_capa(codigo, idx)
+                    tipo_nuevo = get_tipo_salida(codigo, ta)
+                    _validar_desde(idx + 1, tipo_nuevo, cb)
+
+            def _ignorar(cb=epocas_callback, idx=i, ta=tipo_actual):
+                messagebox.showwarning("advertencia",
+                    "TensorFlow tirará error con esta estructura.")
+                nuevo_tipo = get_tipo_salida(capas_elegidas[idx], ta)
+                _validar_desde(idx + 1, nuevo_tipo, cb)
+
+            if soluciones:
+                msg = (f"'{anterior}' produce {tipo_actual}\n"
+                       f"pero '{nombre}' necesita {tipo_requerido}.\n\n"
+                       f"Opciones para resolver:")
+            else:
+                msg = (f"'{anterior}' produce {tipo_actual}\n"
+                       f"pero '{nombre}' necesita {tipo_requerido}.\n\n"
+                       f"No existe puente posible. Solo podés eliminar '{nombre}':")
+
+            _mostrar_opciones(msg, opciones_completas, _accion, _ignorar, epocas_callback)
+            return
+
+    # ── sin problema → avanzar ──
+    nuevo_tipo = get_tipo_salida(capa_str, tipo_actual or "1D") if nombre else tipo_actual
+    _validar_desde(i + 1, nuevo_tipo, epocas_callback)
+
+def _verificar_final(epocas_callback):
+    capas = capas_elegidas
+    if not capas:
+        epocas_callback()
+        return
+
+    ultimo_nombre = get_nombre_capa(capas[-1])
+    es_dense_salida = (
+        ultimo_nombre == "Dense" and
+        ("sigmoid" in capas[-1] or "softmax" in capas[-1])
+    )
+    if es_dense_salida:
+        epocas_callback()
+        return
+
+    tipo_ultimo = get_tipo_salida(capas[-1], "1D")
+
+    if tipo_ultimo != "1D":
+        # necesita Flatten + Dense al final
+        def _si(_, cb=epocas_callback):
+            capas_elegidas.append("tf.keras.layers.Flatten()")
+            capas_elegidas.append("tf.keras.layers.Dense(1, activation='sigmoid')")
+            actualizar_codigo()
+            cb()
+        def _no(cb=epocas_callback):
+            messagebox.showwarning("advertencia", "TensorFlow tirará error sin capa de salida.")
+            cb()
+        _mostrar_opciones(
+            f"La última capa '{ultimo_nombre}' produce {tipo_ultimo}\n"
+            f"y no puede ser capa de salida.\n"
+            f"Hay que aplastar y agregar Dense al final.",
+            [("Flatten + Dense(1, sigmoid)", "__flatten_dense__")],
+            _si, _no, epocas_callback
+        )
+    else:
+        def _si(codigo, cb=epocas_callback):
+            capas_elegidas.append(codigo)
+            actualizar_codigo()
+            cb()
+        def _no(cb=epocas_callback):
+            messagebox.showwarning("advertencia", "Sin Dense final el modelo no producirá resultados válidos.")
+            cb()
+        _mostrar_opciones(
+            f"La última capa es '{ultimo_nombre}'.\n"
+            f"La red necesita terminar con Dense(sigmoid o softmax)\n"
+            f"para producir un resultado final.",
+            [("Dense(1, sigmoid)  — clasificación binaria",
+              "tf.keras.layers.Dense(1, activation='sigmoid')"),
+             ("Dense(10, softmax) — clasificación múltiple",
+              "tf.keras.layers.Dense(10, activation='softmax')")],
+            _si, _no, epocas_callback
+        )
+
+def _mostrar_opciones(mensaje, opciones, callback_si, callback_no, epocas_callback=None):
+    win = tk.Toplevel(ventana)
+    win.title("problema detectado")
+    win.configure(bg="#18181b")
+    win.grab_set()
+
+    alto = 130 + len(opciones) * 50 + 50
+    win.geometry(f"440x{alto}")
+
+    tk.Label(win, text=mensaje,
+             bg="#18181b", fg="white",
+             font=("Courier", 10), justify="left",
+             wraplength=410).pack(padx=15, pady=15, anchor="w")
+
+    tk.Label(win, text="── opciones disponibles ──",
+             bg="#18181b", fg="#a1a1aa",
+             font=("Courier", 9)).pack()
+
+    for nombre_op, codigo_op in opciones:
+        def hacer(c=codigo_op, w=win, cb=callback_si):
+            w.destroy()
+            cb(c)
+        tk.Button(win, text=nombre_op, command=hacer,
+                  bg="#1D9E75", fg="white",
+                  font=("Courier", 10), relief="flat",
+                  anchor="w").pack(pady=3, padx=15, fill="x")
+
+    # "continuar sin corregir" salta TODA la validación restante y va directo a entrenar
+    destino = epocas_callback if epocas_callback else callback_no
+    tk.Button(win,
+              text="continuar sin corregir  (ir directo a entrenar)",
+              command=lambda: [win.destroy(), destino()],
+              bg="#E24B4A", fg="white",
+              font=("Courier", 9), relief="flat").pack(pady=8, padx=15, fill="x")
+
+def insertar_capa(codigo_capa, posicion):
+    capas_elegidas.insert(posicion, codigo_capa)
+    actualizar_codigo()
+
+# ══════════════════════════════════════════
+# PANTALLAS
+# ══════════════════════════════════════════
+def pantalla_inicio():
+    neurona_seleccionada[0] = None
+    capas_elegidas.clear()
+    actualizar_codigo()
+    limpiar(canvas_izq)
+    limpiar(canvas_der)
+    canvas_izq.create_text(175, 150, text="esperando\nimagen...",
+                           fill="white", font=("Courier", 16), justify="center")
+    canvas_der.create_text(175, 150, text="esperando\nimagen...",
+                           fill="black", font=("Courier", 16), justify="center")
+
+def pantalla_elegir():
+    limpiar(canvas_izq)
+    limpiar(canvas_der)
+    canvas_izq.create_text(175, 80, text="¿cómo entrenar?",
+                           fill="white", font=("Courier", 14, "bold"))
+    tk.Button(canvas_izq, text="nueva neurona",
+              command=lambda: mostrar_neurona(0),
+              bg="#1D9E75", fg="white",
+              font=("Courier", 12), relief="flat").place(x=50, y=120, width=250, height=50)
+    tk.Button(canvas_izq, text="red existente",
+              command=lambda: cargar_modelo_existente(),
+              bg="#534AB7", fg="white",
+              font=("Courier", 12), relief="flat").place(x=50, y=200, width=250, height=50)
+    canvas_der.create_text(175, 150, text="seleccioná\nuna opción",
+                           fill="black", font=("Courier", 14), justify="center")
+
+def mostrar_neurona(idx):
+    indice_neurona[0] = idx
+    n = NEURONAS[idx]
+    limpiar(canvas_izq)
+    limpiar(canvas_der)
+
+    canvas_izq.create_text(175, 40, text=n["nombre"],
+                           fill="white", font=("Courier", 16, "bold"))
+    canvas_izq.create_text(175, 140, text=n["desc"],
+                           fill="white", font=("Courier", 11),
+                           justify="center", width=300)
+    tk.Button(canvas_izq, text="seleccionar",
+              command=lambda neurona=n: pedir_unidades(neurona),
+              bg=n["color"], fg="white",
+              font=("Courier", 11), relief="flat").place(x=75, y=250, width=200, height=35)
+
+    canvas_der.create_oval(125, 50, 225, 150,
+                           fill=n["color"], outline="white", width=2)
+    canvas_der.create_text(175, 100, text="N",
+                           fill="white", font=("Courier", 30, "bold"))
+    canvas_der.create_text(175, 180, text=n["nombre"],
+                           fill="black", font=("Courier", 14, "bold"))
+    canvas_der.create_text(175, 220, text=f"{idx+1} / {len(NEURONAS)}",
+                           fill="#555", font=("Courier", 10))
+
+    if idx > 0:
+        tk.Button(canvas_der, text="◀",
+                  command=lambda: mostrar_neurona(indice_neurona[0] - 1),
+                  bg="yellow", fg="black",
+                  font=("Courier", 16), relief="flat").place(x=10, y=100, width=40, height=40)
+    if idx < len(NEURONAS) - 1:
+        tk.Button(canvas_der, text="▶",
+                  command=lambda: mostrar_neurona(indice_neurona[0] + 1),
+                  bg="yellow", fg="black",
+                  font=("Courier", 16), relief="flat").place(x=300, y=100, width=40, height=40)
+
+def pedir_unidades(neurona):
+    unidades = simpledialog.askinteger("unidades",
+                                       f"¿cuántas neuronas para {neurona['nombre']}?",
+                                       minvalue=1, maxvalue=2048, initialvalue=64)
+    if unidades:
+        neurona_seleccionada[0] = neurona
+        agregar_capa(neurona, unidades)
+
+def agregar_capa(neurona, unidades):
+    nombre = neurona["nombre"]
+    es_primera = not capas_elegidas
+
+    def inp(shape): return f", input_shape={shape}" if es_primera else ""
+
+    if nombre == "Dense":
+        capa = f"tf.keras.layers.Dense({unidades}, activation='relu')"
+    elif nombre == "Conv2D":
+        capa = f"tf.keras.layers.Conv2D({unidades}, (3,3), activation='relu'{inp('(28,28,1)')})"
+    elif nombre == "SeparableConv2D":
+        capa = f"tf.keras.layers.SeparableConv2D({unidades}, (3,3), activation='relu'{inp('(28,28,1)')})"
+    elif nombre == "DepthwiseConv2D":
+        capa = f"tf.keras.layers.DepthwiseConv2D((3,3), activation='relu'{inp('(28,28,1)')})"
+    elif nombre == "Conv2DTranspose":
+        capa = f"tf.keras.layers.Conv2DTranspose({unidades}, (3,3), activation='relu'{inp('(28,28,1)')})"
+    elif nombre == "ZeroPadding2D":
+        capa = f"tf.keras.layers.ZeroPadding2D((1,1){inp('(28,28,1)')})"
+    elif nombre == "MaxPooling2D":
+        capa = f"tf.keras.layers.MaxPooling2D((2,2))"
+    elif nombre == "GlobalAveragePooling2D":
+        capa = f"tf.keras.layers.GlobalAveragePooling2D()"
+    elif nombre == "Conv1D":
+        capa = f"tf.keras.layers.Conv1D({unidades}, 3, activation='relu'{inp('(28,28)')})"
+    elif nombre == "MaxPooling1D":
+        capa = f"tf.keras.layers.MaxPooling1D(2)"
+    elif nombre == "GlobalAveragePooling1D":
+        capa = f"tf.keras.layers.GlobalAveragePooling1D()"
+    elif nombre == "LSTM":
+        capa = f"tf.keras.layers.LSTM({unidades}{inp('(28,28)')})"
+    elif nombre == "GRU":
+        capa = f"tf.keras.layers.GRU({unidades}{inp('(28,28)')})"
+    elif nombre == "SimpleRNN":
+        capa = f"tf.keras.layers.SimpleRNN({unidades}{inp('(28,28)')})"
+    elif nombre == "Bidirectional":
+        capa = f"tf.keras.layers.Bidirectional(tf.keras.layers.LSTM({unidades}){inp('(28,28)')})"
+    elif nombre == "Embedding":
+        capa = f"tf.keras.layers.Embedding(10000, {unidades})"
+    elif nombre == "MultiHeadAttention":
+        capa = f"tf.keras.layers.MultiHeadAttention(num_heads=4, key_dim={unidades})"
+    elif nombre == "Attention":
+        capa = "tf.keras.layers.Attention()"
+    elif nombre == "Flatten":
+        if es_primera:
+            capa = "tf.keras.layers.Flatten(input_shape=(28,28,1))"
+        else:
+            capa = "tf.keras.layers.Flatten()"
+    elif nombre == "Reshape":
+        forma = simpledialog.askstring("Reshape",
+            "¿A qué forma? (ej: (7,7,1) o (784,))",
+            initialvalue="(7,7,1)")
+        capa = f"tf.keras.layers.Reshape({forma or '(784,)'})"
+    elif nombre == "Dropout":
+        capa = "tf.keras.layers.Dropout(0.5)"
+    elif nombre == "BatchNormalization":
+        capa = "tf.keras.layers.BatchNormalization()"
+    elif nombre == "LayerNormalization":
+        capa = "tf.keras.layers.LayerNormalization()"
+    else:
+        capa = f"tf.keras.layers.{nombre}({unidades})"
+
+    capas_elegidas.append(capa)
+    actualizar_codigo()
+    preguntar_opcionales(neurona, 0)
+
+def preguntar_opcionales(neurona, idx):
+    opcionales = OPCIONALES.get(neurona["nombre"], [])
+    if idx >= len(opcionales):
+        preguntar_otra_neurona()
+        return
+    op = opcionales[idx]
+    resp = messagebox.askyesno("opcional", f"¿agregar {op}?")
+    if resp:
+        mapa = {
+            "Dropout":            "tf.keras.layers.Dropout(0.5)",
+            "MaxPooling2D":       "tf.keras.layers.MaxPooling2D((2,2))",
+            "MaxPooling1D":       "tf.keras.layers.MaxPooling1D(2)",
+            "BatchNormalization": "tf.keras.layers.BatchNormalization()",
+            "LayerNormalization": "tf.keras.layers.LayerNormalization()",
+        }
+        if op in mapa:
+            capas_elegidas.append(mapa[op])
+            actualizar_codigo()
+    preguntar_opcionales(neurona, idx + 1)
+
+def preguntar_otra_neurona():
+    resp = messagebox.askyesno("otra neurona", "¿agregar otra neurona a la estructura?")
+    if resp:
+        mostrar_neurona(0)
+    else:
+        actualizar_codigo()
+        limpiar(canvas_izq)
+        limpiar(canvas_der)
+        canvas_izq.create_text(175, 100, text="estructura lista\npresioná entrenar",
+                               fill="white", font=("Courier", 13), justify="center")
+        canvas_der.create_text(175, 150, text="red armada ✓",
+                               fill="black", font=("Courier", 16), justify="center")
+
+# ══════════════════════════════════════════
+# ENTRENAMIENTO
+# ══════════════════════════════════════════
+def pedir_epocas_y_entrenar():
+    epocas = simpledialog.askinteger("épocas", "¿cuántas épocas?",
+                                     minvalue=1, initialvalue=10)
+    if epocas:
+        pantalla_entrenando(epocas, continuar=False)
+
+def pantalla_entrenando(epocas, continuar=False):
+    limpiar(canvas_izq)
+    limpiar(canvas_der)
+    canvas_izq.create_text(175, 50, text="entrenando...",
+                           fill="white", font=("Courier", 13))
+    barra_frame = tk.Frame(canvas_izq, bg="blue")
+    barra_frame.place(x=20, y=80, width=310, height=20)
+    barra = tk.Canvas(barra_frame, bg="#18181b", highlightthickness=0)
+    barra.place(x=0, y=0, width=310, height=20)
+    label_progreso = tk.Label(canvas_izq, text=f"época 0 / {epocas}",
+                              bg="blue", fg="white", font=("Courier", 10))
+    label_progreso.place(x=20, y=110)
+    label_acc = tk.Label(canvas_izq, text="precisión: -",
+                         bg="blue", fg="#1D9E75", font=("Courier", 11))
+    label_acc.place(x=20, y=140)
+
+    fig, ax = plt.subplots(figsize=(3.5, 2.8), facecolor="#ffff00")
+    ax.set_facecolor("#ffff00")
+    ax.set_title("precisión", fontsize=9, color="black")
+    ax.set_xlabel("época", fontsize=8, color="black")
+    ax.set_ylabel("accuracy", fontsize=8, color="black")
+    ax.tick_params(colors="black")
+    linea, = ax.plot([], [], color="#1D9E75", linewidth=2)
+    ax.set_xlim(0, epocas)
+    ax.set_ylim(0, 1)
+    fig_canvas = FigureCanvasTkAgg(fig, master=canvas_der)
+    fig_canvas.get_tk_widget().place(x=0, y=0, width=350, height=300)
+    grafica_canvas[0] = fig_canvas
+    historial_acc = []
+
+    def actualizar_grafica(epoca, acc):
+        historial_acc.append(acc)
+        linea.set_data(range(1, len(historial_acc)+1), historial_acc)
+        fig_canvas.draw()
+        barra.delete("all")
+        ancho = int((epoca / epocas) * 310)
+        barra.create_rectangle(0, 0, ancho, 20, fill="#1D9E75", outline="")
+        label_progreso.config(text=f"época {epoca} / {epocas}")
+        label_acc.config(text=f"precisión: {acc:.4f}")
+
+    def entrenar():
+        try:
+            x = np.random.rand(100, 28, 28, 1).astype("float32")
+            y = np.random.randint(0, 2, 100).astype("float32")
+
+            # si continuar=True y ya hay modelo, lo reutiliza sin recompilar
+            if continuar and modelo_actual[0] is not None:
+                modelo = modelo_actual[0]
+            else:
+                modelo = tf.keras.Sequential()
+                for capa_str in capas_elegidas:
+                    modelo.add(eval(capa_str))
+                modelo.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+                modelo_actual[0] = modelo
+
+            for epoca in range(1, epocas + 1):
+                history = modelo.fit(x, y, epochs=1, verbose=0)
+                acc = float(history.history["accuracy"][0])
+                ventana.after(0, actualizar_grafica, epoca, acc)
+            ventana.after(0, pantalla_resultado)
+        except Exception as err:
+            msg = str(err)
+            ventana.after(0, lambda m=msg: messagebox.showerror("error", m))
+
+    hilo = threading.Thread(target=entrenar, daemon=True)
+    hilo.start()
+
+def iniciar_entrenamiento():
+    if not capas_elegidas:
+        messagebox.showerror("error", "primero seleccione una neurona o estructura existente")
+        return
+    validar_y_entrenar(pedir_epocas_y_entrenar)
+
+def pantalla_resultado():
+    limpiar(canvas_izq)
+    canvas_izq.create_text(175, 60, text="entrenamiento\ncompletado ✓",
+                           fill="white", font=("Courier", 13), justify="center")
+    tk.Button(canvas_izq, text="más épocas",
+              command=pedir_mas_epocas,
+              bg="#534AB7", fg="white",
+              font=("Courier", 11), relief="flat").place(x=50, y=130, width=250, height=45)
+    tk.Button(canvas_izq, text="guardar",
+              command=guardar_modelo,
+              bg="#1D9E75", fg="white",
+              font=("Courier", 11), relief="flat").place(x=50, y=200, width=250, height=45)
+
+def pedir_mas_epocas():
+    epocas = simpledialog.askinteger("más épocas", "¿cuántas épocas más?",
+                                     minvalue=1, initialvalue=10)
+    if epocas:
+        pantalla_entrenando(epocas, continuar=True)
+
+def guardar_modelo():
+    carpeta = filedialog.askdirectory(title="elegí carpeta para guardar")
+    if carpeta:
+        nombre = simpledialog.askstring("nombre", "nombre para este modelo:", initialvalue="mi_modelo")
+        if nombre:
+            datos = {"nombre": nombre, "capas": capas_elegidas}
+            path_json = os.path.join(carpeta, f"{nombre}.json")
+            with open(path_json, "w") as f:
+                json.dump(datos, f, indent=2)
+            if modelo_actual[0]:
+                path_modelo = os.path.join(carpeta, f"{nombre}.keras")
+                modelo_actual[0].save(path_modelo)
+            messagebox.showinfo("guardado", f"guardado en:\n{carpeta}")
+
+def cargar_modelo_existente():
+    path = filedialog.askopenfilename(
+        title="elegí un modelo guardado",
+        filetypes=[("modelos", "*.json")])
+    if path:
+        with open(path, "r") as f:
+            datos = json.load(f)
+        capas_elegidas.clear()
+        capas_elegidas.extend(datos["capas"])
+        actualizar_codigo()
+        limpiar(canvas_izq)
+        limpiar(canvas_der)
+        canvas_izq.create_text(175, 100,
+                               text=f"modelo cargado:\n{datos['nombre']}\n\npresioná entrenar",
+                               fill="white", font=("Courier", 12), justify="center")
+        canvas_der.create_text(175, 150, text="red cargada ✓",
+                               fill="black", font=("Courier", 16), justify="center")
+
+# ══════════════════════════════════════════
+# PANEL FOTOS
+# ══════════════════════════════════════════
+def registrar_drop(widget):
+    widget.drop_target_register(DND_FILES)
+    widget.dnd_bind("<<Drop>>", drop)
+
+def crear_boton():
+    b = tk.Button(panel_fotos, text="+ subir foto",
+              command=subir_foto,
+              bg="red", fg="white",
+              font=("Courier", 40), relief="flat")
+    b.place(x=0, y=0, width=700, height=200)
+    registrar_drop(panel_fotos)
+    registrar_drop(b)
+
+def cambiar_foto():
+    for widget in panel_fotos.winfo_children():
+        widget.destroy()
+    imagenes.clear()
+    capas_elegidas.clear()
+    actualizar_codigo()
+    pantalla_inicio()
+    crear_boton()
+
+def mostrar_imagen(path):
+    path = path.strip().strip("{}")
+    try:
+        img = Image.open(path).resize((700, 200))
+        ref = ImageTk.PhotoImage(img)
+        imagenes.append(ref)
+        for widget in panel_fotos.winfo_children():
+            widget.destroy()
+        lbl = tk.Label(panel_fotos, image=ref, bg="red")
+        lbl.place(x=0, y=0, width=700, height=200)
+        tk.Button(panel_fotos, text="entrenar",
+                  command=iniciar_entrenamiento,
+                  bg="green", fg="white",
+                  font=("Courier", 14), relief="flat").place(x=0, y=0, width=350, height=40)
+        tk.Button(panel_fotos, text="cambiar foto",
+                  command=cambiar_foto,
+                  bg="orange", fg="white",
+                  font=("Courier", 14), relief="flat").place(x=350, y=0, width=350, height=40)
+        pantalla_elegir()
+    except Exception as err:
+        msg = str(err)
+        messagebox.showerror("error", msg)
+
+def subir_foto():
+    path = filedialog.askopenfilename(
+        filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.bmp")])
+    if path:
+        mostrar_imagen(path)
+
+def drop(event):
+    mostrar_imagen(event.data)
+
+pantalla_inicio()
+crear_boton()
+ventana.mainloop()
